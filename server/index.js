@@ -40,6 +40,16 @@ function validateDraftInput(input) {
   return { to, subject, context, tone }
 }
 
+function validateSendInput(input) {
+  const to = cleanHeader(input.to)
+  const subject = cleanHeader(input.subject).slice(0, 160)
+  const body = String(input.body || '').trim().slice(0, 20_000)
+  if (!isEmail(to)) throw new Error('Enter a valid recipient email address.')
+  if (!subject) throw new Error('Add a subject.')
+  if (!body) throw new Error('Add an email message before sending.')
+  return { to, subject, body }
+}
+
 function base64Url(value) {
   return Buffer.from(value).toString('base64url')
 }
@@ -75,9 +85,10 @@ async function generateEmail({ to, subject, context, tone }) {
     headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-5-mini',
+      reasoning: { effort: 'minimal' },
       instructions: `You write complete, ready-to-review email drafts. Use a ${tone} tone. Preserve the user's facts; do not invent names, dates, commitments, or claims. Return plain text only, including a greeting and sign-off. Do not include a subject line or markdown.`,
       input: `Recipient: ${to}\nSubject: ${subject}\nUser intent:\n${context}`,
-      max_output_tokens: 700,
+      max_output_tokens: 1500,
     }),
   })
   const data = await response.json()
@@ -87,9 +98,8 @@ async function generateEmail({ to, subject, context, tone }) {
   return text.trim()
 }
 
-async function createGmailDraft(req, input, body) {
-  const accessToken = await refreshGoogleToken(req)
-  const mime = [
+function createMimeMessage(req, input, body) {
+  return [
     `To: ${input.to}`,
     `From: ${cleanHeader(req.session.google.email)}`,
     `Subject: ${input.subject}`,
@@ -99,6 +109,11 @@ async function createGmailDraft(req, input, body) {
     '',
     body,
   ].join('\r\n')
+}
+
+async function createGmailDraft(req, input, body) {
+  const accessToken = await refreshGoogleToken(req)
+  const mime = createMimeMessage(req, input, body)
   const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
@@ -107,6 +122,33 @@ async function createGmailDraft(req, input, body) {
   const data = await response.json()
   if (!response.ok) throw new Error(data.error?.message || 'Gmail could not save the draft.')
   return data.id
+}
+
+async function updateGmailDraft(req, draftId, input) {
+  const accessToken = await refreshGoogleToken(req)
+  const headers = { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
+  const mime = createMimeMessage(req, input, input.body)
+  const updateResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(draftId)}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ id: draftId, message: { raw: base64Url(mime) } }),
+  })
+  const updatedDraft = await updateResponse.json()
+  if (!updateResponse.ok) throw new Error(updatedDraft.error?.message || 'Gmail could not update the draft.')
+  return updatedDraft
+}
+
+async function sendGmailDraft(req, draftId, input) {
+  await updateGmailDraft(req, draftId, input)
+  const accessToken = await refreshGoogleToken(req)
+  const sendResponse = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/drafts/send', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: draftId }),
+  })
+  const sentMessage = await sendResponse.json()
+  if (!sendResponse.ok) throw new Error(sentMessage.error?.message || 'Gmail could not send the draft.')
+  return sentMessage.id
 }
 
 app.get('/api/status', (req, res) => {
@@ -153,7 +195,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
     const profileResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', { headers: { Authorization: `Bearer ${tokens.access_token}` } })
     const profile = await profileResponse.json()
     if (!profileResponse.ok || !profile.email) throw new Error('Could not read the connected Google account.')
-    req.session.google = { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt: Date.now() + tokens.expires_in * 1000, email: profile.email }
+    req.session.google = { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt: Date.now() + tokens.expires_in * 1000, email: profile.email, draftIds: [] }
     res.redirect(`${appOrigin}/?connected=1`)
   } catch (error) {
     console.error(error)
@@ -170,10 +212,40 @@ app.post('/api/drafts', async (req, res) => {
     const input = validateDraftInput(req.body)
     const body = await generateEmail(input)
     const draftId = req.session.google?.refreshToken ? await createGmailDraft(req, input, body) : null
+    if (draftId) req.session.google.draftIds = [...(req.session.google.draftIds || []), draftId].slice(-20)
     res.json({ body, draftId, demo: !hasOpenAIConfig })
   } catch (error) {
     const clientError = /Enter|Add a subject|Describe|Connect Gmail/.test(error.message)
     res.status(clientError ? 400 : 502).json({ error: error.message || 'Unable to create the draft.' })
+  }
+})
+
+app.put('/api/drafts/:draftId', async (req, res) => {
+  try {
+    const draftId = cleanHeader(req.params.draftId)
+    if (!req.session.google?.refreshToken) throw new Error('Connect Gmail before saving a draft.')
+    if (!req.session.google.draftIds?.includes(draftId)) throw new Error('Create a new draft in this session before saving it.')
+    const input = validateSendInput(req.body)
+    await updateGmailDraft(req, draftId, input)
+    res.json({ draftId })
+  } catch (error) {
+    const clientError = /Enter|Add a subject|Add an email|Connect Gmail|Create a new draft/.test(error.message)
+    res.status(clientError ? 400 : 502).json({ error: error.message || 'Unable to save the draft.' })
+  }
+})
+
+app.post('/api/drafts/:draftId/send', async (req, res) => {
+  try {
+    const draftId = cleanHeader(req.params.draftId)
+    if (!req.session.google?.refreshToken) throw new Error('Connect Gmail before sending an email.')
+    if (!req.session.google.draftIds?.includes(draftId)) throw new Error('Create a new draft in this session before sending it.')
+    const input = validateSendInput(req.body)
+    const messageId = await sendGmailDraft(req, draftId, input)
+    req.session.google.draftIds = req.session.google.draftIds.filter((id) => id !== draftId)
+    res.json({ messageId })
+  } catch (error) {
+    const clientError = /Enter|Add a subject|Add an email|Connect Gmail|Create a new draft/.test(error.message)
+    res.status(clientError ? 400 : 502).json({ error: error.message || 'Unable to send the email.' })
   }
 })
 

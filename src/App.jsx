@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { BriefcaseBusiness, Check, Link2Off, LockKeyhole, Mail, PencilLine, Smile } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { BriefcaseBusiness, Check, Link2Off, LockKeyhole, Mail, PencilLine, Save, Send, Smile } from 'lucide-react'
 
 const sample = {
   to: 'maya@atlas.studio',
@@ -52,26 +52,43 @@ function ToneSwitch({ tone, onChange }) {
   )
 }
 
-function EmailPreview({ form, body, from, saved }) {
+function EmailPreview({ form, body, from, saved, dirty, sent, saving, sending, canSave, canSend, onBodyChange, onSave, onSend }) {
   return (
     <section className="preview-wrap" aria-label="Email preview">
       <article className="preview-sheet">
         <div className="preview-title">
-          <span>{saved ? 'Gmail draft created' : 'Live preview'}</span>
-          {saved ? <span className="saved-mark"><Check size={15} />Saved</span> : null}
+          <span>{sent ? 'Email sent' : 'Review your email'}</span>
+          {sent ? <span className="saved-mark"><Check size={15} />Sent</span> : saved ? <span className="saved-mark"><Check size={15} />Saved in Gmail</span> : null}
         </div>
         <dl className="email-meta">
           <div><dt>To</dt><dd>{form.to || 'recipient@example.com'}</dd></div>
           <div><dt>Subject</dt><dd>{form.subject || 'Your subject line'}</dd></div>
           <div><dt>From</dt><dd>{from || 'you@gmail.com'}</dd></div>
         </dl>
-        <div className="email-body">
-          {(body || 'Your generated email will appear here.').split('\n').map((line, index) => (
-            <p key={`${index}-${line}`}>{line || '\u00a0'}</p>
-          ))}
+        <div className="email-editor-wrap">
+          <label className="sr-only" htmlFor="email-body">Email body</label>
+          <textarea
+            id="email-body"
+            className="email-body-editor"
+            value={body}
+            onChange={(event) => onBodyChange(event.target.value)}
+            placeholder="Your generated email will appear here."
+            disabled={sent}
+          />
+        </div>
+        <div className="preview-actions">
+          <span>{sent ? 'Delivered through Gmail.' : dirty ? 'You have unsaved changes.' : canSend ? 'Draft saved. Review before sending.' : 'Generate an email to create a Gmail draft.'}</span>
+          <div className="email-actions">
+            <button className="save-button" type="button" onClick={onSave} disabled={!canSave || saving || sending || sent}>
+              <Save size={18} />{saving ? 'Saving…' : 'Save draft'}
+            </button>
+            <button className="send-button" type="button" onClick={onSend} disabled={!canSend || saving || sending || sent}>
+              <Send size={18} />{sending ? 'Sending…' : sent ? 'Sent' : 'Send email'}
+            </button>
+          </div>
         </div>
       </article>
-      <p className="privacy-note"><LockKeyhole size={15} />Saved drafts stay in Gmail until you send them.</p>
+      <p className="privacy-note"><LockKeyhole size={15} />Nothing is sent until you review and confirm.</p>
     </section>
   )
 }
@@ -83,6 +100,11 @@ export default function App() {
   const [body, setBody] = useState(previewBodies.professional)
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [draftId, setDraftId] = useState(null)
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [sent, setSent] = useState(false)
   const [notice, setNotice] = useState('')
 
   useEffect(() => {
@@ -100,18 +122,20 @@ export default function App() {
     return () => { active = false }
   }, [])
 
-  const preview = useMemo(() => body || previewBodies[tone], [body, tone])
-
   function updateField(event) {
     const { name, value } = event.target
     setForm((current) => ({ ...current, [name]: value }))
     setSaved(false)
+    setDirty(Boolean(draftId))
+    setSent(false)
   }
 
   function changeTone(nextTone) {
     setTone(nextTone)
     setBody(previewBodies[nextTone])
     setSaved(false)
+    setDirty(Boolean(draftId))
+    setSent(false)
   }
 
   async function createDraft(event) {
@@ -119,6 +143,9 @@ export default function App() {
     setBusy(true)
     setNotice('')
     setSaved(false)
+    setDraftId(null)
+    setDirty(false)
+    setSent(false)
     try {
       const response = await fetch('/api/drafts', {
         method: 'POST',
@@ -129,6 +156,8 @@ export default function App() {
       if (!response.ok) throw new Error(data.error || 'Unable to create the draft.')
       setBody(data.body)
       setSaved(Boolean(data.draftId))
+      setDraftId(data.draftId)
+      setDirty(false)
       setNotice(data.draftId ? 'Draft created in Gmail.' : 'Demo draft generated. Connect Gmail to save it.')
     } catch (error) {
       setNotice(error.message)
@@ -137,10 +166,66 @@ export default function App() {
     }
   }
 
+  function updateBody(value) {
+    setBody(value)
+    setSaved(false)
+    setDirty(Boolean(draftId))
+    setSent(false)
+  }
+
+  async function saveDraft() {
+    if (!draftId) return
+    setSaving(true)
+    setNotice('')
+    try {
+      const response = await fetch(`/api/drafts/${encodeURIComponent(draftId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: form.to, subject: form.subject, body }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Unable to save the draft.')
+      setSaved(true)
+      setDirty(false)
+      setNotice('Draft changes saved in Gmail.')
+    } catch (error) {
+      setNotice(error.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function sendDraft() {
+    if (!draftId || !window.confirm(`Send this email to ${form.to}?`)) return
+    setSending(true)
+    setNotice('')
+    try {
+      const response = await fetch(`/api/drafts/${encodeURIComponent(draftId)}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: form.to, subject: form.subject, body }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Unable to send the email.')
+      setSent(true)
+      setSaved(false)
+      setDraftId(null)
+      setDirty(false)
+      setNotice('Email sent through Gmail.')
+    } catch (error) {
+      setNotice(error.message)
+    } finally {
+      setSending(false)
+    }
+  }
+
   async function disconnect() {
     await fetch('/api/auth/logout', { method: 'POST' })
     setStatus((current) => ({ ...current, connected: false, email: null }))
     setSaved(false)
+    setDraftId(null)
+    setDirty(false)
+    setSent(false)
   }
 
   function showConfigurationHelp() {
@@ -154,7 +239,7 @@ export default function App() {
         <section className="composer">
           <div className="intro">
             <h1>Write the email you<br />meant to send.</h1>
-            <p>Give PitchTrace the context. It will shape the words and save a draft to Gmail—never send it.</p>
+            <p>Give PitchTrace the context. Review and edit the Gmail draft, then send it when you are ready.</p>
           </div>
           <form onSubmit={createDraft}>
             <ToneSwitch tone={tone} onChange={changeTone} />
@@ -164,10 +249,24 @@ export default function App() {
             <button className="create-button" type="submit" disabled={busy}>
               <PencilLine size={21} />{busy ? 'Creating draft…' : status.connected ? 'Create Gmail draft' : 'Generate demo draft'}
             </button>
-            {notice ? <p className={`notice ${saved ? 'success' : ''}`} role="status">{notice}</p> : null}
+            {notice ? <p className={`notice ${saved || sent ? 'success' : ''}`} role="status">{notice}</p> : null}
           </form>
         </section>
-        <EmailPreview form={form} body={preview} from={status.email} saved={saved} />
+        <EmailPreview
+          form={form}
+          body={body}
+          from={status.email}
+          saved={saved}
+          dirty={dirty}
+          sent={sent}
+          saving={saving}
+          sending={sending}
+          canSave={Boolean(status.connected && draftId && dirty && body.trim())}
+          canSend={Boolean(status.connected && draftId && body.trim())}
+          onBodyChange={updateBody}
+          onSave={saveDraft}
+          onSend={sendDraft}
+        />
       </main>
     </div>
   )
