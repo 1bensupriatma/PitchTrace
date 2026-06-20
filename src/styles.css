@@ -1,0 +1,94 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Playfair+Display:wght@600&display=swap');
+
+:root {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  color: #101827;
+  background: #f8fafc;
+  font-synthesis: none;
+  --ink: #101827;
+  --muted: #5e6879;
+  --line: #d8dee8;
+  --blue: #1557f0;
+  --blue-soft: #edf3ff;
+  --coral: #ff665c;
+  --green: #2cbd68;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input, textarea { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+.app-shell { min-height: 100vh; background: #fbfcfe; }
+.topbar { height: 82px; padding: 0 42px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.88); }
+.brand { font: 600 34px/1 'Playfair Display', Georgia, serif; color: var(--ink); text-decoration: none; letter-spacing: -1.5px; }
+.brand span { color: var(--coral); }
+.account-area, .connection, .connect-button, .disconnect { display: flex; align-items: center; }
+.account-area { gap: 20px; color: #3f495b; font-size: 15px; }
+.connection { gap: 10px; }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; background: #a8b0be; }
+.connected .status-dot { background: var(--green); box-shadow: 0 0 0 4px #e9f8ef; }
+.divider { width: 1px; height: 26px; background: var(--line); }
+.disconnect { gap: 8px; color: var(--coral); background: white; border: 1px solid #d3d9e3; padding: 12px 15px; border-radius: 8px; }
+.connect-button { gap: 8px; color: white; background: var(--blue); padding: 12px 17px; border-radius: 8px; text-decoration: none; font-weight: 600; }
+
+.workspace { max-width: 1440px; margin: 0 auto; padding: 42px 48px 30px; display: grid; grid-template-columns: minmax(420px, 530px) minmax(540px, 1fr); gap: 82px; align-items: start; }
+.composer { padding-top: 12px; }
+.intro h1 { margin: 0; font: 600 clamp(44px, 4vw, 58px)/.99 'Playfair Display', Georgia, serif; letter-spacing: -2.4px; }
+.intro p { max-width: 510px; margin: 20px 0 28px; color: var(--muted); font-size: 17px; line-height: 1.6; }
+.composer form { display: flex; flex-direction: column; gap: 18px; }
+.tone-switch { margin: 0 0 3px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; border: 1px solid #cbd3df; border-radius: 8px; overflow: hidden; }
+.tone-switch button { min-height: 58px; display: flex; gap: 10px; align-items: center; justify-content: center; border: 0; background: white; color: #3c4658; font-size: 16px; }
+.tone-switch button + button { border-left: 1px solid #cbd3df; }
+.tone-switch button.active { color: var(--blue); background: var(--blue-soft); box-shadow: inset 0 0 0 1.5px var(--blue); font-weight: 600; }
+label { display: flex; flex-direction: column; gap: 8px; font-size: 15px; font-weight: 600; }
+input, textarea { width: 100%; border: 1px solid #c6ceda; border-radius: 7px; background: white; color: var(--ink); padding: 14px 15px; outline: none; font-size: 16px; font-weight: 400; transition: border-color .18s, box-shadow .18s; }
+input { height: 54px; }
+textarea { min-height: 124px; line-height: 1.55; resize: vertical; }
+input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(21,87,240,.12); }
+.create-button { align-self: flex-start; min-width: 315px; height: 60px; display: flex; align-items: center; justify-content: center; gap: 11px; border: 0; border-radius: 8px; color: white; background: var(--blue); font-weight: 600; font-size: 17px; box-shadow: 0 8px 20px rgba(21,87,240,.18); transition: transform .18s, background .18s; }
+.create-button:hover { background: #0d49d5; transform: translateY(-1px); }
+.create-button:disabled { cursor: wait; opacity: .68; transform: none; }
+.notice { margin: -4px 0 0; color: #b5473f; font-size: 14px; font-weight: 500; }
+.notice.success { color: #19834a; }
+
+.preview-wrap { min-width: 0; }
+.preview-sheet { background: white; border: 1px solid #d5dce6; border-radius: 11px; box-shadow: 0 12px 36px rgba(31,42,61,.07); overflow: hidden; }
+.preview-title { min-height: 62px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 14px; border-bottom: 1px solid var(--line); }
+.saved-mark { display: inline-flex; align-items: center; gap: 5px; color: #19834a; font-weight: 600; }
+.email-meta { margin: 0; padding: 0 28px; }
+.email-meta div { min-height: 57px; display: grid; grid-template-columns: 105px 1fr; align-items: center; border-bottom: 1px solid var(--line); }
+.email-meta dt { font-weight: 600; }
+.email-meta dd { margin: 0; color: #384255; overflow: hidden; text-overflow: ellipsis; }
+.email-body { min-height: 485px; padding: 28px 30px 34px; color: #253044; font-size: 16px; line-height: 1.55; }
+.email-body p { margin: 0 0 13px; }
+.privacy-note { margin: 22px 0 0; display: flex; align-items: center; justify-content: center; gap: 8px; color: #6b7586; font-size: 13px; }
+
+@media (max-width: 1050px) {
+  .workspace { gap: 36px; padding-inline: 30px; grid-template-columns: minmax(360px, .9fr) 1.1fr; }
+  .account-email, .divider { display: none; }
+}
+@media (max-width: 800px) {
+  .topbar { height: auto; min-height: 72px; padding: 14px 20px; }
+  .account-area { gap: 10px; }
+  .connection { display: none; }
+  .disconnect, .connect-button { padding: 10px 12px; }
+  .workspace { padding: 34px 20px; grid-template-columns: 1fr; gap: 40px; }
+  .composer { padding-top: 0; }
+  .intro h1 { font-size: clamp(40px, 12vw, 52px); }
+  .preview-wrap { order: 2; }
+}
+@media (max-width: 480px) {
+  .brand { font-size: 29px; }
+  .workspace { padding-inline: 16px; }
+  .tone-switch button { font-size: 14px; }
+  .create-button { width: 100%; min-width: 0; }
+  .email-meta { padding-inline: 18px; }
+  .email-meta div { grid-template-columns: 70px 1fr; font-size: 14px; }
+  .email-body { padding: 24px 20px; font-size: 15px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+}
