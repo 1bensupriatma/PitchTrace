@@ -17,6 +17,7 @@ const redirectUri = process.env.GOOGLE_REDIRECT_URI || `http://127.0.0.1:${port}
 const googleAuthUrl = new URL('/api/auth/google', redirectUri).toString()
 const hasGoogleConfig = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
 const hasOpenAIConfig = Boolean(process.env.OPENAI_API_KEY)
+const hasGooglePlacesConfig = Boolean(process.env.GOOGLE_PLACES_API_KEY)
 const isProduction = process.env.NODE_ENV === 'production'
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const sessionSecret = process.env.SESSION_SECRET || 'local-development-only-change-me'
@@ -51,6 +52,8 @@ const cleanHeader = (value) => String(value || '').replace(/[\r\n]/g, ' ').trim(
 const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 const encodeBase64Lines = (value) => Buffer.from(value).toString('base64').match(/.{1,76}/g)?.join('\r\n') || ''
 const decodeBase64Url = (value) => Buffer.from(value, 'base64url').toString('utf8')
+const PLACE_RESULT_LIMIT = 10
+const WEBSITE_SCAN_LIMIT = 5
 
 function validateEmailList(value, label, required = false) {
   const emails = cleanHeader(value).split(',').map((email) => email.trim()).filter(Boolean)
@@ -143,6 +146,111 @@ async function reviewContactEvidence(payload) {
     maxOutputTokens: 1800,
   })
   return parseJsonResponse(text)
+}
+
+async function searchGooglePlaces(task) {
+  if (!hasGooglePlacesConfig) throw new AppError('Add GOOGLE_PLACES_API_KEY to use place search.', 400)
+  const textQuery = String(task || '').trim().slice(0, 260)
+  if (!textQuery) throw new AppError('Tell the agent what kind of places to search for.', 400)
+  const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': process.env.GOOGLE_PLACES_API_KEY,
+      'X-Goog-FieldMask': [
+        'places.displayName',
+        'places.formattedAddress',
+        'places.nationalPhoneNumber',
+        'places.websiteUri',
+        'places.googleMapsUri',
+      ].join(','),
+    },
+    body: JSON.stringify({ textQuery, maxResultCount: PLACE_RESULT_LIMIT }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new AppError(data.error?.message || 'Google Places search failed.', response.status, { provider: 'google-places' })
+  return Array.isArray(data.places) ? data.places : []
+}
+
+function normalizePlace(place, index) {
+  const company = cleanHeader(place.displayName?.text || `Place ${index + 1}`)
+  const phone = cleanHeader(place.nationalPhoneNumber)
+  const address = cleanHeader(place.formattedAddress)
+  const website = cleanHeader(place.websiteUri)
+  const mapsUrl = cleanHeader(place.googleMapsUri)
+  return {
+    id: `place-${index + 1}`,
+    name: '',
+    title: '',
+    company,
+    email: '',
+    phone,
+    address,
+    sourceUrl: website || mapsUrl,
+    website,
+    mapsUrl,
+    confidence: website ? 'medium' : 'low',
+  }
+}
+
+function mergePlaceContacts(place, scannedContacts) {
+  const emailContacts = scannedContacts.filter((contact) => contact.email)
+  if (!emailContacts.length) return [place]
+  return emailContacts.map((contact, index) => ({
+    ...place,
+    ...contact,
+    id: `${place.id}-contact-${index + 1}`,
+    company: contact.company || place.company,
+    phone: contact.phone || place.phone,
+    address: contact.address || place.address,
+    sourceUrl: contact.sourceUrl || place.sourceUrl,
+    website: place.website,
+    mapsUrl: place.mapsUrl,
+  }))
+}
+
+async function runPlacesAgent(task) {
+  const agentTask = String(task || '').trim().slice(0, 240)
+  const places = (await searchGooglePlaces(agentTask)).map(normalizePlace)
+  const contacts = []
+  const pages = []
+  let scannedWebsites = 0
+  let scanWarning = ''
+
+  for (const place of places) {
+    if (!place.website || scannedWebsites >= WEBSITE_SCAN_LIMIT) {
+      contacts.push(place)
+      continue
+    }
+    scannedWebsites += 1
+    try {
+      const scanned = await scanWebsite(place.website, { review: hasOpenAIConfig ? reviewContactEvidence : undefined, task: agentTask })
+      pages.push(...(scanned.pages || []))
+      contacts.push(...mergePlaceContacts(place, scanned.contacts || []))
+    } catch (error) {
+      scanWarning ||= error.message || 'One website could not be scanned.'
+      contacts.push(place)
+    }
+  }
+
+  const normalized = contacts.slice(0, 50).map((contact, index) => ({ ...contact, id: `contact-${index + 1}` }))
+  return {
+    page: { url: 'Google Places', title: 'Place search results', description: `${places.length} place${places.length === 1 ? '' : 's'} discovered` },
+    contacts: normalized,
+    pages,
+    agent: {
+      mode: hasOpenAIConfig ? 'places-ai-assisted' : 'places-deterministic',
+      pageLimit: WEBSITE_SCAN_LIMIT,
+      task: agentTask,
+      steps: [
+        `Accepted request: ${agentTask}`,
+        `Found ${places.length} place candidate${places.length === 1 ? '' : 's'} with Google Places`,
+        `Scanned ${scannedWebsites} official website${scannedWebsites === 1 ? '' : 's'} for public email evidence`,
+        `Prepared ${normalized.length} contact candidate${normalized.length === 1 ? '' : 's'} for review`,
+      ],
+    },
+    warnings: [scanWarning, normalized.length ? '' : 'No places were found for that request.'].filter(Boolean),
+  }
 }
 
 function removeGeneratedSignOff(value) {
@@ -347,6 +455,7 @@ app.get('/api/status', (req, res) => {
     email: req.session.google?.email || null,
     demo: !hasGoogleConfig || !hasOpenAIConfig,
     googleConfigured: hasGoogleConfig,
+    googlePlacesConfigured: hasGooglePlacesConfig,
     googleAuthUrl,
     openAIConfigured: hasOpenAIConfig,
   })
@@ -366,10 +475,22 @@ app.post('/api/scrape/agent', async (req, res) => {
     const now = Date.now()
     if (req.session.lastAgentRunAt && now - req.session.lastAgentRunAt < 8_000) throw new AppError('Wait a few seconds before running the agent again.', 429)
     req.session.lastAgentRunAt = now
-    const result = await scanWebsite(req.body?.url, { review: hasOpenAIConfig ? reviewContactEvidence : undefined })
+    const result = await scanWebsite(req.body?.url, { review: hasOpenAIConfig ? reviewContactEvidence : undefined, task: req.body?.task })
     res.set('Cache-Control', 'no-store').json(result)
   } catch (error) {
     sendError(res, error, 'Unable to run the controlled contact agent.')
+  }
+})
+
+app.post('/api/scrape/places-agent', async (req, res) => {
+  try {
+    const now = Date.now()
+    if (req.session.lastAgentRunAt && now - req.session.lastAgentRunAt < 8_000) throw new AppError('Wait a few seconds before running the agent again.', 429)
+    req.session.lastAgentRunAt = now
+    const result = await runPlacesAgent(req.body?.task)
+    res.set('Cache-Control', 'no-store').json(result)
+  } catch (error) {
+    sendError(res, error, 'Unable to run the places contact agent.')
   }
 })
 

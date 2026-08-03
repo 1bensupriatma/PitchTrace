@@ -26,9 +26,41 @@ const builtInTemplates = [
   { id: 'thank-you', name: 'Thank you', subject: 'Thank you', context: 'Express sincere thanks, mention what was especially helpful, and close warmly.' },
 ]
 
+const scrapePromptSuggestions = [
+  'Find 10 dentists in Austin and get their contact information.',
+  'Find coffee shops in Brooklyn with public contact details for outreach.',
+  'Find local restaurants in Boston and prepare the strongest email contacts for a pitch.',
+]
+
+const contactTableFields = [
+  { key: 'company', label: 'Place' },
+  { key: 'name', label: 'Contact' },
+  { key: 'title', label: 'Role' },
+  { key: 'email', label: 'Email' },
+  { key: 'phone', label: 'Phone' },
+]
+
+const contactCsvFields = [
+  { key: 'company', label: 'Place' },
+  { key: 'name', label: 'Contact Name' },
+  { key: 'title', label: 'Role' },
+  { key: 'email', label: 'Email' },
+  { key: 'phone', label: 'Phone' },
+  { key: 'address', label: 'Address' },
+  { key: 'website', label: 'Website' },
+  { key: 'mapsUrl', label: 'Google Maps URL' },
+  { key: 'sourceUrl', label: 'Contact Source URL' },
+  { key: 'confidence', label: 'Confidence' },
+]
+
 async function apiRequest(url, options) {
   const response = await fetch(url, options)
-  const data = response.status === 204 ? null : await response.json()
+  const contentType = response.headers.get('content-type') || ''
+  const data = response.status === 204
+    ? null
+    : contentType.includes('application/json')
+      ? await response.json()
+      : { error: `The API returned ${response.status} ${response.statusText || 'instead of JSON'}. Restart the dev server and try again.` }
   if (!response.ok) {
     const error = new Error(data?.error || 'The request could not be completed.')
     error.details = data?.details
@@ -153,7 +185,7 @@ function HomePage() {
 }
 
 function ScrapePage() {
-  const [url, setUrl] = useState('')
+  const [agentRequest, setAgentRequest] = useState(scrapePromptSuggestions[0])
   const [page, setPage] = useState(null)
   const [contacts, setContacts] = useState([])
   const [selected, setSelected] = useState([])
@@ -164,18 +196,22 @@ function ScrapePage() {
 
   async function scanContactPage(event) {
     event.preventDefault()
+    if (!agentRequest.trim()) {
+      setMessage({ type: 'error', text: 'Tell the agent what kind of places to search for.' })
+      return
+    }
     setLoading(true)
     setMessage(null)
     try {
-      const result = await apiRequest('/api/scrape/agent', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+      const result = await apiRequest('/api/scrape/places-agent', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: agentRequest }),
       })
       setPage(result.page)
       setContacts(result.contacts)
       setSelected(result.contacts.map(({ id }) => id))
       setAgent(result.agent)
       setPages(result.pages || [])
-      setMessage({ type: result.contacts.length ? 'success' : 'info', text: result.contacts.length ? `Found ${result.contacts.length} contact${result.contacts.length === 1 ? '' : 's'} on this page.` : result.warnings?.[0] || 'No public contact details were found.' })
+      setMessage({ type: result.contacts.length ? 'success' : 'info', text: result.contacts.length ? `Agent found ${result.contacts.length} contact${result.contacts.length === 1 ? '' : 's'} to review.` : result.warnings?.[0] || 'No public contact details were found.' })
     } catch (error) {
       setPage(null)
       setContacts([])
@@ -203,9 +239,11 @@ function ScrapePage() {
   function exportCsv() {
     const chosen = contacts.filter(({ id }) => selected.includes(id))
     if (!chosen.length) return setMessage({ type: 'error', text: 'Select at least one contact to export.' })
-    const fields = ['name', 'title', 'company', 'email', 'phone', 'address', 'sourceUrl']
     const escape = (value) => `"${String(value || '').replaceAll('"', '""')}"`
-    const csv = [fields.map(escape), ...chosen.map((contact) => fields.map((field) => escape(contact[field])))].map((row) => row.join(',')).join('\r\n')
+    const csv = [
+      contactCsvFields.map(({ label }) => escape(label)),
+      ...chosen.map((contact) => contactCsvFields.map(({ key }) => escape(contact[key]))),
+    ].map((row) => row.join(',')).join('\r\n')
     const href = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' }))
     const link = document.createElement('a')
     link.href = href
@@ -218,10 +256,21 @@ function ScrapePage() {
   function openInPitch() {
     const contact = contacts.find(({ id, email }) => selected.includes(id) && email)
     if (!contact) return setMessage({ type: 'error', text: 'Select a contact with an email address first.' })
+    const recipient = contact.name || 'the team'
+    const place = contact.company || 'this business'
+    const details = [
+      `Business: ${place}`,
+      contact.name ? `Contact: ${contact.name}` : '',
+      contact.title ? `Role: ${contact.title}` : '',
+      contact.phone ? `Phone: ${contact.phone}` : '',
+      contact.address ? `Address: ${contact.address}` : '',
+      contact.website ? `Website: ${contact.website}` : '',
+      contact.sourceUrl ? `Source: ${contact.sourceUrl}` : '',
+    ].filter(Boolean).join('\n')
     const handoff = {
       to: contact.email,
-      subject: `Introduction — ${contact.company || contact.name || 'quick conversation'}`,
-      context: `Write a concise introduction to ${contact.name || 'this contact'}${contact.title ? `, ${contact.title}` : ''}${contact.company ? ` at ${contact.company}` : ''}. Explain why a short conversation could be useful and propose a clear next step. Source: ${contact.sourceUrl}`,
+      subject: `Introduction — ${place}`,
+      context: `Write a concise pitch email to ${recipient} at ${place}. Use the business/contact parameters below to keep the message accurate. Explain why a short conversation could be useful and propose a clear next step.\n\n${details}`,
     }
     sessionStorage.setItem('pitchtrace.scrapeHandoff', JSON.stringify(handoff))
     window.location.href = '/pitch?from=scrape'
@@ -235,13 +284,16 @@ function ScrapePage() {
       <main className="scrape-main">
         <section className="scrape-copy">
           <a className="back-link" href="/"><ArrowRight size={15} />Back to home</a>
-          <h1>Collect the signal<br />before you write<span>.</span></h1>
-          <p>Give the controlled agent a public website. It will inspect a small set of likely contact pages, then use AI to organize only the evidence it found.</p>
-          <form onSubmit={scanContactPage}>
-            <label>Website URL<div className="scrape-url-field"><Globe2 size={18} /><input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://example.com" required /></div></label>
-            <button type="submit" disabled={loading}><Sparkles size={18} />{loading ? 'Agent is reviewing…' : 'Run controlled agent'}</button>
+          <h1>Ask the agent<br />to find contacts<span>.</span></h1>
+          <p>Describe the places you want to find. The agent searches Google Places first, then scans official websites when available for public email contacts.</p>
+          <form className="agent-request-form" onSubmit={scanContactPage}>
+            <label>Ask the agent<textarea value={agentRequest} onChange={(event) => setAgentRequest(event.target.value)} maxLength={260} placeholder="Find 10 dentists in Austin and get their contact information." required /></label>
+            <div className="prompt-suggestions" aria-label="Prompt suggestions">
+              {scrapePromptSuggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => setAgentRequest(suggestion)}>{suggestion}</button>)}
+            </div>
+            <button type="submit" disabled={loading}><Sparkles size={18} />{loading ? 'Agent is searching…' : 'Ask agent to find contacts'}</button>
           </form>
-          <p className="scrape-guidance"><LockKeyhole size={15} />Same domain only, five pages maximum, robots.txt enforced, and every result keeps its source URL.</p>
+          <p className="scrape-guidance"><LockKeyhole size={15} />Uses Google Places for discovery, then scans official websites only when available. Every result keeps a source URL.</p>
           {message ? <p className={`scrape-message ${message.type}`} role="status">{message.text}</p> : null}
         </section>
         <section className="scrape-stage" aria-label="Contact extraction results">
@@ -254,22 +306,46 @@ function ScrapePage() {
           </div>
           {contacts.length ? (
             <div className="contact-results">
-              {agent ? <div className="agent-trace"><div><Sparkles size={16} /><strong>{agent.mode === 'ai-assisted' ? 'AI review complete' : 'Controlled scan complete'}</strong><span>{pages.length}/{agent.pageLimit} pages</span></div><ol>{agent.steps.map((step) => <li key={step}>{step}</li>)}</ol></div> : null}
+              {agent ? <div className="agent-trace"><div><Sparkles size={16} /><strong>{agent.mode === 'ai-assisted' ? 'Agent review complete' : 'Controlled scan complete'}</strong><span>{pages.length}/{agent.pageLimit} pages</span></div>{agent.task ? <p>{agent.task}</p> : null}<ol>{agent.steps.map((step) => <li key={step}>{step}</li>)}</ol></div> : null}
               <div className="results-summary"><span>{selectedCount} of {contacts.length} selected</span><small>Edit any field before export or handoff.</small></div>
               <div className="contact-table-wrap">
                 <table className="contact-table">
-                  <thead><tr><th><input type="checkbox" checked={selectedCount === contacts.length} onChange={toggleAll} aria-label="Select all contacts" /></th><th>Name</th><th>Title</th><th>Company</th><th>Email</th><th>Phone</th></tr></thead>
+                  <thead><tr><th><input type="checkbox" checked={selectedCount === contacts.length} onChange={toggleAll} aria-label="Select all contacts" /></th>{contactTableFields.map(({ label }) => <th key={label}>{label}</th>)}</tr></thead>
                   <tbody>{contacts.map((contact) => (
                     <tr key={contact.id}>
-                      <td><input type="checkbox" checked={selected.includes(contact.id)} onChange={() => toggleContact(contact.id)} aria-label={`Select ${contact.name || contact.email || 'contact'}`} /></td>
-                      {['name', 'title', 'company', 'email', 'phone'].map((field) => <td key={field}><input aria-label={`${field} for ${contact.name || contact.email || 'contact'}`} value={contact[field]} onChange={(event) => updateContact(contact.id, field, event.target.value)} /></td>)}
+                      <td><input type="checkbox" checked={selected.includes(contact.id)} onChange={() => toggleContact(contact.id)} aria-label={`Select ${contact.company || contact.name || contact.email || 'contact'}`} /></td>
+                      {contactTableFields.map(({ key, label }) => <td key={key}><input aria-label={`${label} for ${contact.company || contact.name || contact.email || 'contact'}`} value={contact[key] || ''} onChange={(event) => updateContact(contact.id, key, event.target.value)} /></td>)}
                     </tr>
                   ))}</tbody>
                 </table>
               </div>
             </div>
           ) : (
-            <div className="stage-empty"><span>{loading ? <Sparkles size={24} /> : <Search size={24} />}</span><h2>{loading ? 'Agent is reviewing the website…' : 'Results will appear here'}</h2><p>{loading ? 'Checking access, following likely contact pages, and collecting sourced evidence.' : 'Enter a public company website to begin.'}</p></div>
+            <div className={`stage-empty ${loading ? 'agent-loading' : ''}`} aria-live="polite">
+              {loading ? (
+                <>
+                  <div className="agent-loader" aria-hidden="true">
+                    <span className="agent-loader-ring" />
+                    <Sparkles size={28} />
+                    <span className="agent-loader-ping one" />
+                    <span className="agent-loader-ping two" />
+                  </div>
+                  <h2>Agent is searching places<span className="loading-dots"><i /> <i /> <i /></span></h2>
+                  <p>Finding places, checking official websites, and collecting sourced contact evidence.</p>
+                  <ul className="agent-loading-steps">
+                    <li><Search size={14} /> Searching Google Places</li>
+                    <li><Globe2 size={14} /> Checking official websites</li>
+                    <li><Mail size={14} /> Looking for public email contacts</li>
+                  </ul>
+                </>
+              ) : (
+                <>
+                  <span><Search size={24} /></span>
+                  <h2>Ask the agent to begin</h2>
+                  <p>Write a prompt or choose a suggestion. No website is required.</p>
+                </>
+              )}
+            </div>
           )}
         </section>
       </main>

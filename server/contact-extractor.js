@@ -311,9 +311,10 @@ export async function extractContactPage(rawUrl) {
   return { ...result, warnings: result.contacts.length ? [] : ['No public email address or phone number was found on this page.'] }
 }
 
-export async function scanWebsite(rawUrl, { review } = {}) {
+export async function scanWebsite(rawUrl, { review, task } = {}) {
   const requestedUrl = validateUrl(rawUrl)
   const origin = requestedUrl.origin
+  const agentTask = cleanText(task).slice(0, 240) || 'Find the best public contact information for this company.'
   const homepage = new URL('/', requestedUrl).toString()
   const queue = [{ url: requestedUrl.toString(), score: 120 }]
   if (homepage !== requestedUrl.toString()) queue.push({ url: homepage, score: 110 })
@@ -365,7 +366,9 @@ export async function scanWebsite(rawUrl, { review } = {}) {
     agent: {
       mode: aiReview ? 'ai-assisted' : 'deterministic-fallback',
       pageLimit: MAX_AGENT_PAGES,
+      task: agentTask,
       steps: [
+        `Accepted request: ${agentTask}`,
         `Restricted scan to ${origin}`,
         `Reviewed ${pages.length} of ${MAX_AGENT_PAGES} allowed pages`,
         `Collected ${contacts.length} sourced contact candidate${contacts.length === 1 ? '' : 's'}`,
